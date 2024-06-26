@@ -32,15 +32,11 @@ func (h *Handler) RunTgBot() error {
 	})
 
 	filter := func(msg *gotgbot.Message) bool {
-
-		if msg.Text != "" {
-			return true
-		}
-
-		return false
+		return msg.Text != ""
 	}
 
 	dispatcher.AddHandler(handlers.NewCommand("start", h.start))
+	dispatcher.AddHandler(handlers.NewCommand("inspect", h.inspect))
 	dispatcher.AddHandler(handlers.NewMessage(filter, h.write))
 
 	updater := ext.NewUpdater(dispatcher, nil)
@@ -62,13 +58,12 @@ func (h *Handler) RunTgBot() error {
 	return nil
 }
 
-// TODO: method must implement connecting to chat and subscribe to updates in rabbit mq channel
 func (h *Handler) start(b *gotgbot.Bot, ctx *ext.Context) error {
 	h.userMux.Lock()
 	h.users[ctx.EffectiveUser.Id] = ctx.EffectiveUser.Username
 	h.userMux.Unlock()
 
-	go h.consume(ctx.EffectiveUser)
+	go h.consume(ctx.EffectiveUser.Id)
 
 	if _, err := ctx.EffectiveMessage.Reply(b, fmt.Sprintf("%s, welcome to the chat", ctx.EffectiveUser.Username), nil); err != nil {
 		fmt.Println(err)
@@ -78,7 +73,6 @@ func (h *Handler) start(b *gotgbot.Bot, ctx *ext.Context) error {
 	return nil
 }
 
-// TODO: method must implement writing message to everyone in the chat
 func (h *Handler) write(b *gotgbot.Bot, ctx *ext.Context) error {
 	if err := h.Service.PublishMessage(context.Background(), ctx.EffectiveUser.Username, ctx.EffectiveMessage.Text); err != nil {
 		fmt.Println(err)
@@ -88,9 +82,23 @@ func (h *Handler) write(b *gotgbot.Bot, ctx *ext.Context) error {
 	return nil
 }
 
-func (h *Handler) consume(user *gotgbot.User) {
+func (h *Handler) inspect(b *gotgbot.Bot, ctx *ext.Context) error {
+	queueName, cons, msgs, err := h.Service.InspectQueue()
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	if _, err := ctx.EffectiveMessage.Reply(b, fmt.Sprintf("queueName: %s\nconsumers: %d\nmessages: %d\n", queueName, cons, msgs), nil); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (h *Handler) consume(me int64) {
 	for {
-		msgs, err := h.Service.ConsumeMessage(user.Username)
+		msgs, err := h.Service.ConsumeMessage("telegram_bot")
 		if err != nil {
 			fmt.Println(err)
 			continue
@@ -99,13 +107,18 @@ func (h *Handler) consume(user *gotgbot.User) {
 		for msg := range msgs {
 			h.userMux.Lock()
 			for userId := range h.users {
-				if userId != user.Id {
+				if me != userId {
 					if _, err := h.tgBot.SendMessage(userId, string(msg.Body), nil); err != nil {
 						fmt.Println(err)
 					}
 				}
 			}
 			h.userMux.Unlock()
+
+			if err := msg.Ack(false); err != nil {
+				fmt.Println(err)
+				return
+			}
 		}
 	}
 }

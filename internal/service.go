@@ -13,6 +13,7 @@ type Service struct {
 type IService interface {
 	PublishMessage(ctx context.Context, username, msg string) error
 	ConsumeMessage(name string) (<-chan amqp.Delivery, error)
+	InspectQueue() (string, int, int, error)
 }
 
 func NewService(queue amqp.Queue, channel *amqp.Channel) IService {
@@ -31,9 +32,33 @@ func (s *Service) PublishMessage(ctx context.Context, username, msg string) erro
 }
 
 func (s *Service) ConsumeMessage(name string) (<-chan amqp.Delivery, error) {
-	msgs, err := s.Channel.Consume(s.Queue.Name, name, true, false, false, false, nil)
+	msgs, err := s.Channel.Consume(
+		s.Queue.Name,
+		name,
+		false,
+		false,
+		false,
+		false,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
 	return msgs, nil
+}
+
+func (s *Service) InspectQueue() (string, int, int, error) {
+	q, err := s.Channel.QueueDeclarePassive(
+		s.Queue.Name,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	return q.Name, q.Consumers, q.Messages, nil
 }
